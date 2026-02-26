@@ -4,6 +4,8 @@ import {
   isAllowedUrl,
   isConfirmationUrl,
   extractConfirmationLinks,
+  getElapsedSecondsSinceEmailDate,
+  LOCAL_HOST_ALLOWLIST,
 } from "./index";
 
 describe("isAllowedSender", () => {
@@ -64,6 +66,10 @@ describe("isAllowedUrl", () => {
   test("rejects fakenotnetflix.com", () => {
     expect(isAllowedUrl("https://fakenotnetflix.com/page")).toBe(false);
   });
+
+  test("rejects 127.0.0.1", () => {
+    expect(isAllowedUrl("http://127.0.0.1:3000/page")).toBe(false);
+  });
 });
 
 describe("isConfirmationUrl", () => {
@@ -101,6 +107,14 @@ describe("isConfirmationUrl", () => {
   test("rejects invalid URLs", () => {
     expect(isConfirmationUrl("not a url")).toBe(false);
     expect(isConfirmationUrl("")).toBe(false);
+  });
+
+  test("rejects 127.0.0.1 confirmation URL", () => {
+    expect(
+      isConfirmationUrl(
+        "http://127.0.0.1:3000/account/update-primary-location?nftoken=abc",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -162,5 +176,46 @@ describe("extractConfirmationLinks", () => {
     const first = extractConfirmationLinks(html);
     const second = extractConfirmationLinks(html);
     expect(first).toEqual(second);
+  });
+
+  test("extracts 127.0.0.1 confirmation link with LOCAL_HOST_ALLOWLIST", () => {
+    const html = `
+      <a href="http://127.0.0.1:3000/account/update-primary-location?nftoken=abc">Confirm</a>
+      <a href="http://127.0.0.1:3000/browse">Browse</a>
+    `;
+    const links = extractConfirmationLinks(html, LOCAL_HOST_ALLOWLIST);
+    expect(links).toEqual([
+      "http://127.0.0.1:3000/account/update-primary-location?nftoken=abc",
+    ]);
+  });
+
+  test("ignores 127.0.0.1 confirmation link by default", () => {
+    const html = `<a href="http://127.0.0.1:3000/account/update-primary-location?nftoken=abc">Confirm</a>`;
+    const links = extractConfirmationLinks(html);
+    expect(links).toEqual([]);
+  });
+});
+
+describe("getElapsedSecondsSinceEmailDate", () => {
+  test("returns elapsed seconds when date is valid", () => {
+    const emailDate = "Thu, 26 Feb 2026 12:00:00 GMT";
+    const nowMs = Date.parse("Thu, 26 Feb 2026 12:00:05 GMT");
+    expect(getElapsedSecondsSinceEmailDate(emailDate, nowMs)).toBe(5);
+  });
+
+  test("returns 0 when date is in the future", () => {
+    const emailDate = "Thu, 26 Feb 2026 12:00:10 GMT";
+    const nowMs = Date.parse("Thu, 26 Feb 2026 12:00:05 GMT");
+    expect(getElapsedSecondsSinceEmailDate(emailDate, nowMs)).toBe(0);
+  });
+
+  test("returns null for missing date", () => {
+    expect(getElapsedSecondsSinceEmailDate(null, Date.now())).toBeNull();
+  });
+
+  test("returns null for invalid date format", () => {
+    expect(
+      getElapsedSecondsSinceEmailDate("not-a-date", Date.now()),
+    ).toBeNull();
   });
 });

@@ -1,28 +1,17 @@
 {
-  "name": "flix-auto-confirm",
-  "module": "src/index.ts",
-  "type": "module",
+  "name": "auto-flixer",
+  "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
-    "dev": "bunx wrangler dev",
-    "deploy": "bunx wrangler deploy",
-    "check": "bunx wrangler check",
-    "test": "bun test",
-    "test:eml": "bun run scripts/test-eml.ts",
-    "test:local-email": "bun run scripts/test-local-email.ts",
-    "types": "bunx wrangler types",
-    "typecheck": "bun run types && tsc --noEmit"
-  },
-  "dependencies": {
-    "@cloudflare/puppeteer": "latest",
-    "postal-mime": "latest"
-  },
-  "devDependencies": {
-    "@types/bun": "latest",
-    "commander": "^14.0.3",
-    "wrangler": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
+    "dev": "bun --filter=* dev",
+    "dev:mock-app": "bun --filter=mock-app run dev",
+    "types": "bun --filter=auto-flixer run types",
+    "deploy": "bun --filter=auto-flixer run deploy",
+    "test": "bun --filter=auto-flixer test",
+    "test:local-email": "bun --filter=auto-flixer run test:local-email"
   }
 }

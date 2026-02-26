@@ -1,0 +1,29 @@
+{
+  "name": "auto-flixer",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bunx wrangler dev --var ENVIRONMENT:local",
+    "deploy": "bunx wrangler deploy",
+    "check": "bunx wrangler check",
+    "test": "bun test",
+    "test:eml": "bun run scripts/test-eml.ts",
+    "test:local-email": "bun run scripts/test-local-email.ts",
+    "types": "bunx wrangler types",
+    "typecheck": "bun run types && tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "latest",
+    "postal-mime": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^24",
+    "commander": "^14.0.3",
+    "wrangler": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

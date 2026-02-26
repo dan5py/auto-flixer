@@ -1,6 +1,15 @@
-# flix-auto-confirm
+# Auto Flixer
 
 Cloudflare Worker that automatically confirms Netflix household verification emails. When an email arrives via Cloudflare Email Routing, the Worker forwards the original message, parses MIME content, extracts the tokenized confirmation link, opens it in a headless browser (Cloudflare Browser Rendering), and clicks the confirm button.
+
+## Monorepo structure
+
+```
+packages/
+  auto-flixer/          Cloudflare Worker (email handler + browser automation)
+apps/
+  mock-app/             Next.js app simulating the Netflix confirmation page
+```
 
 ## Prerequisites
 
@@ -22,14 +31,14 @@ In the Cloudflare dashboard:
 
 1. Go to **Email Routing** for your domain
 2. Create a routing rule that sends Netflix emails to this Worker
-3. Example: route `*@yourdomain.com` or a specific address to the `flix-auto-confirm` Worker
+3. Example: route `*@yourdomain.com` or a specific address to the `auto-flixer` Worker
 
 ### 3. Set the forwarding address secret
 
 Set `FORWARD_TO` as a Worker secret using Wrangler:
 
 ```bash
-bunx wrangler secret put FORWARD_TO
+bun run --cwd packages/auto-flixer bunx wrangler secret put FORWARD_TO
 ```
 
 Wrangler will prompt for the destination email address value.
@@ -41,7 +50,7 @@ The Worker currently uses:
 - Confirm button: `button[data-uia="set-primary-location-action"]`
 - Invalid token marker: `div[data-uia="upl-invalid-token"]`
 
-If Netflix changes their markup, update `NETFLIX_CONFIRM_SELECTOR` / `INVALID_TOKEN_SELECTOR` in `src/index.ts`.
+If Netflix changes their markup, update `NETFLIX_CONFIRM_SELECTOR` / `INVALID_TOKEN_SELECTOR` in `packages/auto-flixer/src/index.ts`.
 
 ### 5. Deploy
 
@@ -51,33 +60,33 @@ bun run deploy
 
 ## Development
 
-```bash
-bun run dev
-```
-
 ### Test the email handler locally
 
-With the dev server running, execute the local email test script:
+Run the mock confirmation app, the Worker dev server, and the email test script in three terminals:
 
 ```bash
+# Terminal 1 — mock Netflix confirmation page (Next.js on port 3000)
+bun run mock:confirm-page
+
+# Terminal 2 — Worker dev server (port 8787)
+bun run dev
+
+# Terminal 3 — send a test email
 bun run test:local-email
+```
+
+The test email defaults to a confirmation link pointing at the local mock app. The Worker will open it in its headless browser and click the confirm button.
+
+To simulate an expired/invalid token instead:
+
+```bash
+bun run test:local-email --invalid-token
 ```
 
 Optional arguments:
 
 ```bash
-bun run test:local-email -- --help
-```
-
-Example with custom values:
-
-```bash
-bun run test:local-email -- \
-  --endpoint "http://localhost:8787/cdn-cgi/handler/email" \
-  --from "info@account.netflix.com" \
-  --to "you@yourdomain.com" \
-  --header-from "Netflix <info@account.netflix.com>" \
-  --subject "Netflix Household verification"
+bun run test:local-email --help
 ```
 
 ### Run tests
@@ -88,12 +97,13 @@ bun test
 
 ## Configuration
 
-| Variable     | Location                    | Description                                             |
-| ------------ | --------------------------- | ------------------------------------------------------- |
-| `FORWARD_TO` | Wrangler Worker secret      | Destination email that always receives a forwarded copy |
-| `BROWSER`    | `wrangler.toml` `[browser]` | Browser Rendering binding (auto-configured)             |
+| Variable      | Location                    | Description                                                         |
+| ------------- | --------------------------- | ------------------------------------------------------------------- |
+| `FORWARD_TO`  | Wrangler Worker secret      | Destination email that always receives a forwarded copy             |
+| `BROWSER`     | `wrangler.toml` `[browser]` | Browser Rendering binding (auto-configured)                         |
+| `ENVIRONMENT` | `wrangler.toml` `[vars]`    | The environment the Worker is running in. Defaults to `production`. |
 
-Runtime automation values such as selectors and browser timeout are defined in `src/index.ts`.
+Runtime automation values such as selectors and browser timeout are defined in `packages/auto-flixer/src/index.ts`.
 
 ## How it works
 

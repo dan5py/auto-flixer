@@ -5,7 +5,6 @@
     "module": "Preserve",
     "moduleDetection": "force",
     "allowJs": true,
-    "types": ["bun-types", "./worker-configuration.d.ts"],
 
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,

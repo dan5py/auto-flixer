@@ -1,6 +1,6 @@
-name = "flix-auto-confirm"
+name = "auto-flixer"
 main = "src/index.ts"
-compatibility_date = "2026-02-20"
+compatibility_date = "2026-02-19"
 compatibility_flags = ["nodejs_compat"]
 preview_urls = false
 workers_dev = false
@@ -11,3 +11,6 @@ head_sampling_rate = 1
 
 [browser]
 binding = "BROWSER"
+
+[vars]
+ENVIRONMENT = "production"

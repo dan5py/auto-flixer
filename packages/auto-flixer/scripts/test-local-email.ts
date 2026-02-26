@@ -7,10 +7,11 @@ interface CliOptions {
   headerFrom: string;
   subject: string;
   confirmUrl: string;
+  invalidToken: boolean;
 }
 
 function buildRawEmail(options: CliOptions, messageId: string): string {
-  const htmlBody = `<html><body><a href="${options.confirmUrl}">Confirm your TV</a></body></html>`;
+  const htmlBody = `<html><body><a href="${options.confirmUrl}">Yes, it's from me</a></body></html>`;
   return [
     `From: ${options.headerFrom}`,
     `To: ${options.to}`,
@@ -22,6 +23,16 @@ function buildRawEmail(options: CliOptions, messageId: string): string {
     "",
     htmlBody,
   ].join("\r\n");
+}
+
+function resolveConfirmUrl(options: CliOptions): string {
+  if (!options.invalidToken) {
+    return options.confirmUrl;
+  }
+
+  const parsed = new URL(options.confirmUrl);
+  parsed.searchParams.set("invalid", "1");
+  return parsed.toString();
 }
 
 async function main(): Promise<void> {
@@ -56,13 +67,18 @@ async function main(): Promise<void> {
     .option(
       "-u, --confirm-url <url>",
       "Confirmation link included in HTML body",
-      "https://www.netflix.com/account/update-primary-location?token=test-token",
+      "http://127.0.0.1:3000/account/update-primary-location?nftoken=test-token",
+    )
+    .option(
+      "--invalid-token",
+      "Set invalid=1 on the confirmation URL to simulate expired token flow",
     );
 
   program.parse();
   const options = program.opts<CliOptions>();
+  options.confirmUrl = resolveConfirmUrl(options);
 
-  const messageId = `<flix-auto-confirm-local-test-${Date.now()}@example.com>`;
+  const messageId = `<auto-flixer-local-test-${Date.now()}@example.com>`;
   const rawEmail = buildRawEmail(options, messageId);
 
   const requestUrl = new URL(options.endpoint);
@@ -71,12 +87,13 @@ async function main(): Promise<void> {
 
   console.log(`POST ${requestUrl.toString()}`);
   console.log(`Header From: ${options.headerFrom}`);
+  console.log(`Confirm URL: ${options.confirmUrl}`);
   console.log(`Message-ID: ${messageId}`);
 
   const response = await fetch(requestUrl, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": "message/rfc822",
     },
     body: rawEmail,
   });
