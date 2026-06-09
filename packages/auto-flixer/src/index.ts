@@ -1,5 +1,5 @@
 import PostalMime from "postal-mime";
-import type { BrowserWorker } from "@cloudflare/puppeteer";
+import type { Browser, BrowserWorker, Page } from "@cloudflare/puppeteer";
 import puppeteer from "@cloudflare/puppeteer";
 
 const NETFLIX_SENDER_PATTERN = /^(.*\.)?netflix\.com$/i;
@@ -12,6 +12,8 @@ const NETFLIX_CONFIRM_SELECTOR =
 const INVALID_TOKEN_SELECTOR = 'div[data-uia="upl-invalid-token"]';
 const LINK_HREF_REGEX = /href=["']([^"']+)["']/gi;
 const BROWSER_TIMEOUT_MS = 5000;
+// Heavy resources that are irrelevant for finding and clicking the confirm button.
+const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 
 export interface Env {
   BROWSER: BrowserWorker;
@@ -108,28 +110,66 @@ export function getElapsedSecondsSinceEmailDate(
   return Math.max(0, (nowMs - emailDateMs) / 1000);
 }
 
+/**
+ * Reconnects to a warm browser session when one is available, skipping the
+ * cold-start cost of launching a new browser instance.
+ */
+async function getBrowser(env: Env): Promise<Browser> {
+  try {
+    const sessions = await puppeteer.sessions(env.BROWSER);
+    const freeSession = sessions.find((session) => !session.connectionId);
+    if (freeSession) {
+      return await puppeteer.connect(env.BROWSER, freeSession.sessionId);
+    }
+  } catch {
+    /* session reuse unavailable — fall back to a fresh launch */
+  }
+  return puppeteer.launch(env.BROWSER);
+}
+
+async function preparePage(browser: Browser): Promise<Page> {
+  const page = await browser.newPage();
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    if (BLOCKED_RESOURCE_TYPES.has(request.resourceType())) {
+      void request.abort();
+    } else {
+      void request.continue();
+    }
+  });
+  return page;
+}
+
 async function clickConfirmLink(
   env: Env,
   url: string,
   emailDateHeader: string | null,
 ): Promise<void> {
-  const browser = await puppeteer.launch(env.BROWSER);
+  const browser = await getBrowser(env);
+  let page: Page | undefined;
+  let healthy = true;
   try {
-    const page = await browser.newPage();
+    page = await preparePage(browser);
     await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: BROWSER_TIMEOUT_MS,
     });
 
-    const invalidToken = await page.$(INVALID_TOKEN_SELECTOR);
-    if (invalidToken) {
+    // Wait for whichever renders first instead of checking sequentially.
+    const element = await page.waitForSelector(
+      `${NETFLIX_CONFIRM_SELECTOR}, ${INVALID_TOKEN_SELECTOR}`,
+      { timeout: BROWSER_TIMEOUT_MS },
+    );
+
+    const isInvalidToken = await element?.evaluate(
+      (el, selector) => el.matches(selector),
+      INVALID_TOKEN_SELECTOR,
+    );
+    if (isInvalidToken) {
       console.log(`Token is invalid or expired — skipping`);
       return;
     }
 
-    await page.waitForSelector(NETFLIX_CONFIRM_SELECTOR, {
-      timeout: BROWSER_TIMEOUT_MS,
-    });
     await page.click(NETFLIX_CONFIRM_SELECTOR);
 
     const elapsedSeconds = getElapsedSecondsSinceEmailDate(
@@ -142,9 +182,17 @@ async function clickConfirmLink(
       }`,
     );
   } catch (error) {
+    healthy = false;
     console.error(`Error clicking confirmation link: ${error}`);
   } finally {
-    await browser.close();
+    if (healthy) {
+      // Leave the browser alive (default 60s keep-alive) so a follow-up
+      // email can reuse the warm session instead of cold-starting.
+      await page?.close().catch(() => {});
+      await browser.disconnect();
+    } else {
+      await browser.close();
+    }
   }
 }
 
