@@ -1,5 +1,5 @@
-import PostalMime from "postal-mime";
-import type { Browser, BrowserWorker, Page } from "@cloudflare/puppeteer";
+import PostalMime, { addressParser } from "postal-mime";
+import type { Browser, BrowserWorker } from "@cloudflare/puppeteer";
 import puppeteer from "@cloudflare/puppeteer";
 
 const NETFLIX_SENDER_PATTERN = /^(.*\.)?netflix\.com$/i;
@@ -12,8 +12,7 @@ const NETFLIX_CONFIRM_SELECTOR =
 const INVALID_TOKEN_SELECTOR = 'div[data-uia="upl-invalid-token"]';
 const LINK_HREF_REGEX = /href=["']([^"']+)["']/gi;
 const BROWSER_TIMEOUT_MS = 5000;
-// Heavy resources that are irrelevant for finding and clicking the confirm button.
-const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
+const CONFIRM_TIMEOUT_MS = 10_000;
 
 export interface Env {
   BROWSER: BrowserWorker;
@@ -43,6 +42,14 @@ interface WorkerExecutionContext {
 export function isAllowedSender(from: string): boolean {
   const domain = from.split("@").pop();
   return domain !== undefined && NETFLIX_SENDER_PATTERN.test(domain);
+}
+
+export function parseHeaderAddress(header: string | null): string {
+  if (!header) {
+    return "";
+  }
+  const [first] = addressParser(header, { flatten: true });
+  return first?.address ?? "";
 }
 
 export function isAllowedUrl(url: string): boolean {
@@ -110,58 +117,43 @@ export function getElapsedSecondsSinceEmailDate(
   return Math.max(0, (nowMs - emailDateMs) / 1000);
 }
 
-/**
- * Reconnects to a warm browser session when one is available, skipping the
- * cold-start cost of launching a new browser instance.
- */
-async function getBrowser(env: Env): Promise<Browser> {
-  try {
-    const sessions = await puppeteer.sessions(env.BROWSER);
-    const freeSession = sessions.find((session) => !session.connectionId);
-    if (freeSession) {
-      return await puppeteer.connect(env.BROWSER, freeSession.sessionId);
-    }
-  } catch {
-    /* session reuse unavailable — fall back to a fresh launch */
-  }
-  return puppeteer.launch(env.BROWSER);
+function launchBrowser(env: Env): Promise<Browser> {
+  const browser = puppeteer.launch(env.BROWSER);
+  // Avoid an unhandled rejection if the launch fails before it is awaited.
+  browser.catch(() => {});
+  return browser;
 }
 
-async function preparePage(browser: Browser): Promise<Page> {
-  const page = await browser.newPage();
-  await page.setRequestInterception(true);
-  page.on("request", (request) => {
-    if (BLOCKED_RESOURCE_TYPES.has(request.resourceType())) {
-      void request.abort();
-    } else {
-      void request.continue();
-    }
-  });
-  return page;
+async function closeBrowser(browser: Promise<Browser>): Promise<void> {
+  try {
+    await (await browser).close();
+  } catch {
+    /* launch failed or already closed */
+  }
 }
 
 async function clickConfirmLink(
-  env: Env,
+  browserPromise: Promise<Browser>,
   url: string,
   emailDateHeader: string | null,
 ): Promise<void> {
-  const browser = await getBrowser(env);
-  let page: Page | undefined;
-  let healthy = true;
   try {
-    page = await preparePage(browser);
+    const browser = await browserPromise;
+    const page = await browser.newPage();
     await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: BROWSER_TIMEOUT_MS,
     });
 
-    // Wait for whichever renders first instead of checking sequentially.
     const element = await page.waitForSelector(
       `${NETFLIX_CONFIRM_SELECTOR}, ${INVALID_TOKEN_SELECTOR}`,
       { timeout: BROWSER_TIMEOUT_MS },
     );
+    if (!element) {
+      throw new Error("Confirmation page did not render");
+    }
 
-    const isInvalidToken = await element?.evaluate(
+    const isInvalidToken = await element.evaluate(
       (el, selector) => el.matches(selector),
       INVALID_TOKEN_SELECTOR,
     );
@@ -170,7 +162,19 @@ async function clickConfirmLink(
       return;
     }
 
-    await page.click(NETFLIX_CONFIRM_SELECTOR);
+    await element.click();
+
+    // Closing the browser before the page reacts can cut off the confirm request.
+    try {
+      await page.waitForSelector(NETFLIX_CONFIRM_SELECTOR, {
+        hidden: true,
+        timeout: CONFIRM_TIMEOUT_MS,
+      });
+    } catch (error) {
+      throw new Error(
+        `Confirm button still on the page after the click, the confirmation may not have gone through (${error})`,
+      );
+    }
 
     const elapsedSeconds = getElapsedSecondsSinceEmailDate(
       emailDateHeader,
@@ -182,17 +186,9 @@ async function clickConfirmLink(
       }`,
     );
   } catch (error) {
-    healthy = false;
     console.error(`Error clicking confirmation link: ${error}`);
   } finally {
-    if (healthy) {
-      // Leave the browser alive (default 60s keep-alive) so a follow-up
-      // email can reuse the warm session instead of cold-starting.
-      await page?.close().catch(() => {});
-      await browser.disconnect();
-    } else {
-      await browser.close();
-    }
+    await closeBrowser(browserPromise);
   }
 }
 
@@ -204,26 +200,22 @@ function hostAllowlistForEnv(env: Env): RegExp {
   return NETFLIX_HOST_ALLOWLIST;
 }
 
-async function processConfirmation(
+function findConfirmationUrl(
   env: Env,
-  parsed: { html?: string },
-  emailDateHeader: string | null,
-): Promise<void> {
-  if (!parsed.html) {
-    return;
+  html: string | undefined,
+): string | null {
+  if (!html) {
+    return null;
   }
 
-  const links = extractConfirmationLinks(parsed.html, hostAllowlistForEnv(env));
-
-  if (links.length === 0) {
+  const [confirmUrl] = extractConfirmationLinks(html, hostAllowlistForEnv(env));
+  if (!confirmUrl) {
     console.log("No Netflix confirmation links found — skipping");
-    return;
+    return null;
   }
 
-  const confirmUrl = links[0]!;
   console.log(`Found confirmation link`);
-
-  await clickConfirmLink(env, confirmUrl, emailDateHeader);
+  return confirmUrl;
 }
 
 export default {
@@ -234,14 +226,33 @@ export default {
   ): Promise<void> {
     ctx.waitUntil(message.forward(env.FORWARD_TO));
 
-    const parsed = await PostalMime.parse(message.raw);
-    const headerFrom = parsed.from?.address ?? "";
+    // Start the browser while parsing. The parsed sender is still checked below.
+    let earlyBrowser = isAllowedSender(
+      parseHeaderAddress(message.headers.get("From")),
+    )
+      ? launchBrowser(env)
+      : null;
 
-    if (!isAllowedSender(headerFrom)) {
-      return;
+    try {
+      const parsed = await PostalMime.parse(message.raw);
+      if (!isAllowedSender(parsed.from?.address ?? "")) {
+        return;
+      }
+
+      const confirmUrl = findConfirmationUrl(env, parsed.html);
+      if (!confirmUrl) {
+        return;
+      }
+
+      const browser = earlyBrowser ?? launchBrowser(env);
+      earlyBrowser = null;
+      ctx.waitUntil(
+        clickConfirmLink(browser, confirmUrl, message.headers.get("Date")),
+      );
+    } finally {
+      if (earlyBrowser) {
+        ctx.waitUntil(closeBrowser(earlyBrowser));
+      }
     }
-
-    const emailDateHeader = message.headers.get("Date");
-    ctx.waitUntil(processConfirmation(env, parsed, emailDateHeader));
   },
 };

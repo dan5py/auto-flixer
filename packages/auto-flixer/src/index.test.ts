@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import {
   isAllowedSender,
+  parseHeaderAddress,
   isAllowedUrl,
   isConfirmationUrl,
   extractConfirmationLinks,
@@ -31,6 +32,29 @@ describe("isAllowedSender", () => {
 
   test("rejects empty string", () => {
     expect(isAllowedSender("")).toBe(false);
+  });
+});
+
+describe("parseHeaderAddress", () => {
+  test("extracts the address from a display-name header", () => {
+    expect(parseHeaderAddress("Netflix <info@account.netflix.com>")).toBe(
+      "info@account.netflix.com",
+    );
+  });
+
+  test("accepts a bare address", () => {
+    expect(parseHeaderAddress("info@netflix.com")).toBe("info@netflix.com");
+  });
+
+  test("handles an encoded display name", () => {
+    expect(
+      parseHeaderAddress("=?UTF-8?B?TmV0ZmxpeA==?= <info@account.netflix.com>"),
+    ).toBe("info@account.netflix.com");
+  });
+
+  test("returns empty string for a missing or empty header", () => {
+    expect(parseHeaderAddress(null)).toBe("");
+    expect(parseHeaderAddress("")).toBe("");
   });
 });
 
