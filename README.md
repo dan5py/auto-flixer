@@ -111,13 +111,15 @@ Runtime automation values such as selectors and browser timeout are defined in `
 Inbound email (Email Routing)
   -> email() handler
   -> Forward to FORWARD_TO
+  -> If the raw "From:" header is *@netflix.com, start launching the
+     headless browser (Cloudflare Browser Rendering) in parallel
   -> Parse MIME content (postal-mime)
   -> Validate parsed "From:" header is *@netflix.com
   -> Extract first netflix.com link from HTML body
-  -> Launch headless browser (Cloudflare Browser Rendering)
   -> Navigate to tokenized confirmation URL
   -> Click the confirm button
-  -> Done
+  -> Wait until the page reacts (navigates or removes the button)
+  -> Close the browser
 ```
 
 ## Notes
